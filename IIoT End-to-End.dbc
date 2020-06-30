@@ -689,4 +689,7 @@ display(optimization_df)
 
 # COMMAND ----------
 
-# MAGIC %md The optimal operating parameters for **WindTurbine-1** given the specified weather conditions is **11 RPM** for generating a maximum profit of **$1.2M**!
+# MAGIC %md The optimal operating parameters for **WindTurbine-1** given the specified weather conditions is **11 RPM** for generating a maximum profit of **$1.4M**! Your results may vary due to the random nature of the sensor readings. 
+
+# COMMAND ----------
+
