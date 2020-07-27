@@ -1,14 +1,12 @@
 # Databricks notebook source
 # MAGIC %md # End to End Industrial IoT (IIoT) on Azure Databricks
+# MAGIC ## Part 1: Data Engineering
 # MAGIC This notebook demonstrates the following architecture for IIoT Ingest, Processing and Analytics on Azure. The following architecture is implemented for the demo. 
 # MAGIC <img src="https://sguptasa.blob.core.windows.net/random/iiot_blog/end_to_end_architecture.png" width=800>
 # MAGIC 
 # MAGIC The notebook is broken into sections following these steps:
 # MAGIC 1. **Data Ingest** - stream real-time raw sensor data from Azure IoT Hubs into the Delta format in Azure Storage
 # MAGIC 2. **Data Processing** - stream process sensor data from raw (Bronze) to silver (aggregated) to gold (enriched) Delta tables on Azure Storage
-# MAGIC 3. **Machine Learning** - train XGBoost regression models using distributed ML to predict power output and asset remaining life on historical sensor data
-# MAGIC 4. **Model Deployment** - deploy trained models for real-time serving in Azure ML services 
-# MAGIC 5. **Model Inference** - score real data instantly against hosted models via REST API
 
 # COMMAND ----------
 
