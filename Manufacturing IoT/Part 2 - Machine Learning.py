@@ -200,7 +200,7 @@ payload = [{
 
 # Call our API to score data
 temp_prediction_uri = "https://adb-5016390217096892.12.azuredatabricks.net/model/temperature_prediction/1/invocations" # Replace with your model URI from MLflow or AzureML
-databricks_token = "dapi69e319a26af7888535ec3dbdfe138d07" # Replace with your Databricks Personal Access Token
+databricks_token = "????" # Replace with your Databricks Personal Access Token
 
 # Function to call the API using REST and return a result
 def score_model(uri, payload):
