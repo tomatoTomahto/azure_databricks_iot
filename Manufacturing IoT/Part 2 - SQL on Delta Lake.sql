@@ -1,5 +1,6 @@
 -- Databricks notebook source
--- MAGIC %md # SQL on the Manufacturing Delta Lake
+-- MAGIC %md # Manufacturing IoT Analytics on Azure Databricks
+-- MAGIC ## Part 2: SQL on the Manufacturing Delta Lake
 -- MAGIC Databricks [SQL Analytics](https://databricks.com/product/sql-analytics) can be used to query your Data Lake Delta tables using an intuitive analyst-focused interface. BI tools like PowerBI can also connect to our SQL Endpoints for fast, scalable and secure ad-hoc BI on our Manufacturing data without moving the data into a data silo. 
 -- MAGIC 
 -- MAGIC <img src="https://sguptasa.blob.core.windows.net/random/iiot_blog/sql_dashboard_manu.gif" width=800>
