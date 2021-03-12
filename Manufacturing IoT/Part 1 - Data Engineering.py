@@ -2,7 +2,7 @@
 # MAGIC %md # Manufacturing IoT Analytics on Azure Databricks
 # MAGIC ## Part 1: Data Engineering
 # MAGIC This notebook demonstrates the following architecture for IIoT Ingest, Processing and Analytics on Azure. The following architecture is implemented for the demo. 
-# MAGIC <img src="https://sguptasa.blob.core.windows.net/random/iiot_blog/end_to_end_architecture.png" width=800>
+# MAGIC <img src="https://sguptasa.blob.core.windows.net/random/iiot_blog/Manufacturing_architecture.png" width=800>
 # MAGIC 
 # MAGIC The notebook is broken into sections following these steps:
 # MAGIC 1. **Data Ingest** - stream real-time raw sensor data from Azure IoT Hubs into the Delta format in Azure Storage
@@ -21,9 +21,8 @@ dbutils.widgets.text("Storage Account","<your ADLS Gen 2 account name>","Storage
 # MAGIC 
 # MAGIC ### Azure Services Required
 # MAGIC * Azure IoT Hub 
-# MAGIC * [Azure IoT Simulator](https://azure-samples.github.io/raspberry-pi-web-simulator/) running with the code provided in [this github repo](https://github.com/tomatoTomahto/azure_databricks_iot/blob/master/azure_iot_simulator.js) and configured for your IoT Hub
+# MAGIC * [Azure IoT Simulator](https://azure-samples.github.io/raspberry-pi-web-simulator/) running with the code provided in [this github repo](https://github.com/tomatoTomahto/azure_databricks_iot/blob/master/Manufacturing%20IoT/iot_simulator.js) and configured for your IoT Hub
 # MAGIC * ADLS Gen 2 Storage account with a container called `iot`
-# MAGIC * (Optional) Azure Synapse SQL Pool call `iot`
 # MAGIC 
 # MAGIC ### Azure Databricks Configuration Required
 # MAGIC * 3-node (min) Databricks Cluster running **DBR 7.0+** and the following libraries:
@@ -31,7 +30,6 @@ dbutils.widgets.text("Storage Account","<your ADLS Gen 2 account name>","Storage
 # MAGIC * The following Secrets defined in scope `iot`
 # MAGIC  * `iothub-cs` - Connection string for your IoT Hub **(Important - use the [Event Hub Compatible](https://devblogs.microsoft.com/iotdev/understand-different-connection-strings-in-azure-iot-hub/) connection string)**
 # MAGIC  * `adls_key` - Access Key to ADLS storage account **(Important - use the [Access Key](https://raw.githubusercontent.com/tomatoTomahto/azure_databricks_iot/master/bricks.com/blog/2020/03/27/data-exfiltration-protection-with-azure-databricks.html))**
-# MAGIC  * (Optional) `synapse_cs` - JDBC connect string to your Synapse SQL Pool **(Important - use the [SQL Authentication](https://docs.microsoft.com/en-us/azure/databricks/data/data-sources/azure/synapse-analytics#spark-driver-to-azure-synapse) with username/password connection string)**
 # MAGIC * The following notebook widgets populated:
 # MAGIC  * `Storage Account` - Name of your storage account
 
@@ -51,9 +49,7 @@ CHECKPOINT_PATH = ROOT_PATH + "checkpoints/"
 
 # Other initializations
 IOT_CS = dbutils.secrets.get('iot','iothub-cs') # IoT Hub connection string (Event Hub Compatible)
-ehConf = { 
-  'eventhubs.connectionString':sc._jvm.org.apache.spark.eventhubs.EventHubsUtils.encrypt(IOT_CS)
-}
+ehConf = { 'eventhubs.connectionString':sc._jvm.org.apache.spark.eventhubs.EventHubsUtils.encrypt(IOT_CS) }
 
 # Enable auto compaction and optimized writes in Delta
 spark.conf.set("spark.databricks.delta.optimizeWrite.enabled","true")
@@ -62,7 +58,6 @@ spark.conf.set("spark.databricks.delta.autoCompact.enabled","true")
 # Pyspark and ML Imports
 import os, json, requests
 from pyspark.sql import functions as F
-from pyspark.sql.functions import pandas_udf, PandasUDFType
 
 # COMMAND ----------
 
@@ -74,7 +69,16 @@ dbutils.fs.rm(ROOT_PATH, True)
 # MAGIC %sql
 # MAGIC -- Clean up tables & views
 # MAGIC DROP TABLE IF EXISTS manufacturing.sensors_raw;
+# MAGIC DROP TABLE IF EXISTS manufacturing.sensors_agg;
+# MAGIC DROP TABLE IF EXISTS manufacturing.sensors_enriched;
+# MAGIC DROP VIEW IF EXISTS manufacturing.facilities;
+# MAGIC DROP VIEW IF EXISTS manufacturing.operating_limits;
+# MAGIC DROP VIEW IF EXISTS manufacturing.parts_inventory;
+# MAGIC DROP VIEW IF EXISTS manufacturing.ml_feature_view;
+# MAGIC DROP TABLE IF EXISTS manufacturing.temperature_predictions;
 # MAGIC DROP DATABASE IF EXISTS manufacturing;
+# MAGIC 
+# MAGIC -- Create a database to host our tables - Databricks stores the table/database metadata but all data (Delta/Parquet files) is stored in ADLS
 # MAGIC CREATE DATABASE IF NOT EXISTS manufacturing;
 
 # COMMAND ----------
@@ -86,11 +90,10 @@ dbutils.fs.rm(ROOT_PATH, True)
 # MAGIC 
 # MAGIC <img src="https://sguptasa.blob.core.windows.net/random/iiot_blog/iot_simulator.gif" width=800>
 # MAGIC 
-# MAGIC We have two separate types of data payloads in our IoT Hub:
-# MAGIC 1. **Turbine Sensor readings** - this payload contains `date`,`timestamp`,`deviceid`,`rpm` and `angle` fields
-# MAGIC 2. **Weather Sensor readings** - this payload contains `date`,`timestamp`,`temperature`,`humidity`,`windspeed`, and `winddirection` fields
+# MAGIC We have one type of data payload in our IoT Hub:
+# MAGIC 1. **Sensor readings** - this payload contains `date`,`timestamp`,`temperature`,`humidity`, `pressure`, `moisture`, `oxygen`, `radiation`, and `conductivity` fields
 # MAGIC 
-# MAGIC We split out the two payloads into separate streams and write them both into Delta locations on Azure Storage. We are able to query these two Bronze tables *immediately* as the data streams in.
+# MAGIC We write the raw data stream from IoT Hubs into Delta table formats on Azure Data Lake Storage. We are able to query this Bronze tables *immediately* as the data streams in.
 
 # COMMAND ----------
 
@@ -106,7 +109,7 @@ iot_stream = (
     .select('reading.*', F.to_date('reading.timestamp').alias('date'))         # Create a "date" field for partitioning
 )
 
-# Split our IoT Hub stream into separate streams and write them both into their own Delta locations
+# Write the stream into Delta locations on ADLS
 write_iot_to_delta = ( iot_stream
     .select('date','facilityid','timestamp','temperature','humidity','pressure',
             'moisture','oxygen','radiation','conductivity')                    # Extract the fields of interest
@@ -137,12 +140,12 @@ while True:
 # MAGIC 
 # MAGIC We will use the following schema for Silver and Gold data sets:
 # MAGIC 
-# MAGIC <img src="https://sguptasa.blob.core.windows.net/random/iiot_blog/iot_delta_bronze_to_gold.png" width=800>
+# MAGIC <img src="https://sguptasa.blob.core.windows.net/random/iiot_blog/Manufacturing_dataflow.png" width=800>
 
 # COMMAND ----------
 
 # MAGIC %md ### 2a. Delta Bronze (Raw) to Delta Silver (Aggregated)
-# MAGIC The first step of our processing pipeline will clean and aggregate the measurements to 1 hour intervals. 
+# MAGIC The first step of our processing pipeline will clean and aggregate the measurements to 5 minute intervals. 
 # MAGIC 
 # MAGIC Since we are aggregating time-series values and there is a likelihood of late-arriving data and data changes, we will use the [**MERGE**](https://docs.microsoft.com/en-us/azure/databricks/spark/latest/spark-sql/language-manual/merge-into?toc=https%3A%2F%2Fdocs.microsoft.com%2Fen-us%2Fazure%2Fazure-databricks%2Ftoc.json&bc=https%3A%2F%2Fdocs.microsoft.com%2Fen-us%2Fazure%2Fbread%2Ftoc.json) functionality of Delta to upsert records into target tables. 
 # MAGIC 
@@ -154,7 +157,7 @@ while True:
 
 # COMMAND ----------
 
-# Create functions to merge turbine and weather data into their target Delta tables
+# Create functions to merge sensor data into it's target Delta table
 def merge_delta(incremental, target): 
   incremental.dropDuplicates(['date','window','facilityid']).createOrReplaceTempView("incremental")
   
@@ -200,18 +203,22 @@ while True:
 # COMMAND ----------
 
 # MAGIC %md ### 2b. Delta Silver (Aggregated) to Delta Gold (Enriched)
-# MAGIC Next we perform a streaming join of weather and turbine readings to create one enriched dataset we can use for data science and model training.
+# MAGIC Next we perform a streaming join of sensor readings to enrichment data like facility information, capacity, location and inventory levels that we can use for data science and model training.
 
 # COMMAND ----------
 
 # MAGIC %sql 
+# MAGIC -- Create dummy tables with fake data for enrichment
+# MAGIC -- Facilities: geographical and capacity information for manufacturing facilities
 # MAGIC CREATE OR REPLACE VIEW manufacturing.facilities AS
 # MAGIC SELECT facilityid, 
-# MAGIC   float(random()*10+30) as latitude, 
-# MAGIC   float(-random()*60-60) as longitude, 
-# MAGIC   int(random()*100+1000) as capacity
+# MAGIC   float(random()*20+30) as latitude, 
+# MAGIC   float(-random()*40-80) as longitude,
+# MAGIC   array('CA','OR','WA','TX','AZ','OH','AL','CO','FL','MN')[int(split(facilityid, '-')[1])] as state, 
+# MAGIC   int(random()*1000+200) as capacity
 # MAGIC FROM (SELECT DISTINCT facilityid FROM manufacturing.sensors_agg);
 # MAGIC 
+# MAGIC -- Operating Limits: temperature and pressure bounds for safe operations (components will fail when outside these bounds)
 # MAGIC CREATE OR REPLACE VIEW manufacturing.operating_limits AS
 # MAGIC SELECT facilityid, 
 # MAGIC     float(approx_percentile(temperature,0.10)) AS min_temp,
@@ -221,11 +228,16 @@ while True:
 # MAGIC FROM manufacturing.sensors_agg
 # MAGIC GROUP BY facilityid;
 # MAGIC 
-# MAGIC select * from manufacturing.facilities f JOIN manufacturing.operating_limits o ON (f.facilityid = o.facilityid)
+# MAGIC -- Parts Inventory: daily inventory levels for parts at each facility
+# MAGIC CREATE OR REPLACE VIEW manufacturing.parts_inventory AS
+# MAGIC SELECT facilityid, 
+# MAGIC   date,
+# MAGIC   float(random()*500+200) as inventory
+# MAGIC FROM (SELECT DISTINCT facilityid, date FROM manufacturing.sensors_agg);
 
 # COMMAND ----------
 
-# Read streams from Delta Silver tables and join them together on common columns (date & window)
+# Read streams from Delta Silver tables and join them together on common columns (facilityid)
 sensors_agg = spark.readStream.format('delta').option("ignoreChanges", True).table('manufacturing.sensors_agg')
 sensors_enriched = (
   sensors_agg.join(spark.table('manufacturing.facilities'), 'facilityid')
@@ -236,7 +248,6 @@ sensors_enriched = (
 merge_gold_stream = (
   sensors_enriched
     .withColumn('window',sensors_enriched.window.start)
-#     .withCo('date','facilityid','window.start as window','rpm','angle','temperature','humidity','windspeed','winddirection')
     .writeStream 
     .foreachBatch(lambda i, b: merge_delta(i, GOLD_PATH + "sensors_enriched"))
     .option("checkpointLocation", CHECKPOINT_PATH + "sensors_enriched")         
@@ -257,6 +268,12 @@ while True:
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ### Data Structure Optimization
+# MAGIC Delta `OPTIMIZE` commands perform file compaction and multi-dimensional clustering (called ZORDER) on a set of columns. This is useful as IoT data typically generates many small files that need to be compacted, and querying the tables based on a facility or timestamp can be sped up by ordering the data on those columns for file-skipping. Delta does this automatically using [auto-optimize](https://docs.microsoft.com/en-us/azure/databricks/delta/optimizations/auto-optimize), or can be done periodically using the [optimize](https://docs.microsoft.com/en-us/azure/databricks/delta/optimizations/file-mgmt) command below. 
+
+# COMMAND ----------
+
 # MAGIC %sql
 # MAGIC -- Optimize all 3 tables for querying and model training performance
 # MAGIC OPTIMIZE manufacturing.sensors_raw ZORDER BY facilityid, timestamp;
@@ -265,7 +282,7 @@ while True:
 
 # COMMAND ----------
 
-# MAGIC %md Our Delta Gold tables are now ready for predictive analytics! We now have hourly weather, turbine operating and power measurements, and daily maintenance logs going back one year. We can see that there is significant correlation between most of the variables.
+# MAGIC %md Our Delta Gold tables are now ready for predictive analytics! We now have aggregated and enriched sensor readings. Our next step is to predict the specific operating conditions that lead to component failures (ie. going out of operating limit bounds)
 
 # COMMAND ----------
 
@@ -280,3 +297,13 @@ while True:
 # MAGIC |**Efficient Upserts**|Data Lakes do not support in-line updates and merges, requiring deletion and insertions of entire partitions to perform updates|MERGE commands are effective for situations handling delayed IoT readings, modified dimension tables used for real-time enrichment, or if data needs to be reprocessed|
 # MAGIC |**File Compaction**|Streaming time-series data into Data Lakes generate hundreds or even thousands of tiny files|Auto-compaction in Delta optimizes the file sizes to increase throughput and parallelism|
 # MAGIC |**Multi-dimensional clustering**|Data Lakes provide push-down filtering on partitions only|ZORDERing time-series on fields like timestamp or sensor ID allows Databricks to filter and join on those columns up to 100x faster than simple partitioning techniques|
+
+# COMMAND ----------
+
+# MAGIC %md ## (Optional) - Stream Data to Synapse or Azure Data Explorer for Serving
+# MAGIC The Data Lake is a great data store for historical analysis, data science, ML and ad-hoc visualization against *all hitorical* data using Databricks. However, a common use case in IoT projects is to serve an aggregated subset (3-6 months) or business level summary data to end users. Synapse SQL Pools provide *low latency, high concurrency* serving capabilities to BI tools for production-level reporting and BI. Follow the example notebook [here](https://databricks.com/notebooks/iiot/iiot-end-to-end-part-1.html) to stream our **GOLD** Delta table into a Synapse SQL Pool for reporting. 
+# MAGIC 
+# MAGIC Similarily, another common use case in IoT projects is to serve real-time time-series reading into an operational dashboard used by operational engineers. Azure Data Explorer provides a real-time database for building operational dashboards on *current* data. Databricks can be used to stream either the raw or aggregated sensor data into ADX for operational serving. Follow the example snippet in the blog article [here](https://databricks.com/blog/2020/08/20/modern-industrial-iot-analytics-on-azure-part-3.html) to stream data from Delta into ADX. 
+
+# COMMAND ----------
+
